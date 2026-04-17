@@ -85,7 +85,7 @@ for _ in range(100):
     train()
 
 # ---------------- SIMILAR USERS ----------------
-def get_similar_users(user_id, emb):
+def get_similar_users(user_id, emb, user_map):
     user_id = int(user_id)
     user_idx = user_map[user_id]
     user_emb = emb[user_idx]
@@ -113,20 +113,34 @@ def recommend(user_id):
     with torch.no_grad():
         emb = model(edge_index, edge_weight)
 
-    sim_users = get_similar_users(user_id, emb)
+    sim_users = get_similar_users(user_id, emb, user_map)
 
     sim_data = ratings[ratings['userId'].isin(sim_users)]
     user_movies = ratings[ratings['userId'] == user_id]['movieId'].values
 
+    # 🔥 REMOVE WATCHED MOVIES
     rec = sim_data[~sim_data['movieId'].isin(user_movies)]
-    rec = rec.sort_values(by="rating", ascending=False)
 
-    top_movies = rec['movieId'].unique()[:5]
+    # 🔥 AGGREGATE (IMPORTANT FIX)
+    rec_grouped = rec.groupby('movieId').agg({
+        'rating': ['mean', 'count']
+    }).reset_index()
+
+    rec_grouped.columns = ['movieId', 'avg_rating', 'count']
+
+    # 🔥 SCORE = rating + popularity
+    rec_grouped['score'] = rec_grouped['avg_rating'] * rec_grouped['count']
+
+    # 🔥 SORT
+    rec_grouped = rec_grouped.sort_values(by='score', ascending=False)
+
+    # 🔥 GET MORE MOVIES (10 instead of 5)
+    top_movies = rec_grouped['movieId'].head(10)
 
     return movies[movies['movieId'].isin(top_movies)][['title']], sim_users
 
 # ---------------- RECOMMEND ----------------
-def personalized_recommend(user_id, model, edge_index, edge_weight):
+def personalized_recommend(user_id, model, edge_index, edge_weight, user_map):
     model.eval()
     with torch.no_grad():
         emb = model(edge_index, edge_weight)
@@ -137,9 +151,19 @@ def personalized_recommend(user_id, model, edge_index, edge_weight):
     user_movies = ratings[ratings['userId'] == user_id]['movieId'].values
 
     rec = sim_data[~sim_data['movieId'].isin(user_movies)]
-    rec = rec.sort_values(by="rating", ascending=False)
 
-    top_movies = rec['movieId'].unique()[:5]
+    # 🔥 AGGREGATE
+    rec_grouped = rec.groupby('movieId').agg({
+        'rating': ['mean', 'count']
+    }).reset_index()
+
+    rec_grouped.columns = ['movieId', 'avg_rating', 'count']
+
+    rec_grouped['score'] = rec_grouped['avg_rating'] * rec_grouped['count']
+
+    rec_grouped = rec_grouped.sort_values(by='score', ascending=False)
+
+    top_movies = rec_grouped['movieId'].head(10)
 
     return movies[movies['movieId'].isin(top_movies)][['title']], sim_users
 
@@ -393,7 +417,7 @@ elif role == "User":
             loss.backward()
             opt.step()
 
-        recs, sim_users = personalized_recommend(new_user, new_model, ei, ew)
+        recs, sim_users = personalized_recommend(new_user, new_model, ei, ew, um)
 
         st.success(f"User ID: {new_user}")
         st.write("Similar Users:", sim_users)
